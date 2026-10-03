@@ -1,0 +1,8 @@
+// Run outside the application. Credentials stay in your shell environment.
+import fs from 'node:fs/promises';
+const {SUPABASE_URL:url,SUPABASE_KEY:key,SUPABASE_EMAIL:email,SUPABASE_PASSWORD:password}=process.env;
+if(!url||!key||!email||!password)throw Error('Configure SUPABASE_URL, SUPABASE_KEY, SUPABASE_EMAIL e SUPABASE_PASSWORD.');
+const login=await fetch(url+'/auth/v1/token?grant_type=password',{method:'POST',headers:{apikey:key,'Content-Type':'application/json'},body:JSON.stringify({email,password})});if(!login.ok)throw Error('Falha no login de exportação.');const session=await login.json();
+const names=['familias','pessoas','contas','cartoes','categorias','lancamentos','fin_subcategorias','fin_metas','fin_orcamentos','fin_planos','fin_movimentos','fin_convites','fin_exclusoes'];const data={format:1,exported_at:new Date().toISOString(),tables:{}};
+try{for(const table of names){const rows=[];for(let offset=0;;offset+=500){const order=table==='fin_exclusoes'?'movimento_id':'id';const r=await fetch(`${url}/rest/v1/${table}?select=*&order=${order}&limit=500&offset=${offset}`,{headers:{apikey:key,Authorization:'Bearer '+session.access_token}});if(!r.ok){if(table==='fin_exclusoes'&&r.status===404)break;throw Error('Falha ao exportar '+table);}const part=await r.json();rows.push(...part);if(part.length<500)break;}data.tables[table]=rows;console.log(table+': '+rows.length);}
+await fs.mkdir('backups',{recursive:true,mode:0o700});await fs.writeFile('backups/export.json',JSON.stringify(data,null,2),{mode:0o600,flag:'wx'});console.log('Exportado em backups/export.json. Não envie esse arquivo ao GitHub.');}finally{await fetch(url+'/auth/v1/logout',{method:'POST',headers:{apikey:key,Authorization:'Bearer '+session.access_token}});}

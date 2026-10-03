@@ -1,0 +1,9 @@
+node_modules/
+.env
+.env.*
+!.env.example
+backups/
+*.dump
+*.tar.gz
+export*.json
+migration-data*.json

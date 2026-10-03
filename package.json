@@ -1,0 +1,27 @@
+{
+  "name": "financeiro-david",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node server/index.mjs",
+    "migrate": "node scripts/migrate.mjs",
+    "user": "node scripts/user.mjs",
+    "export:supabase": "node scripts/export.mjs",
+    "import:data": "node scripts/import.mjs",
+    "test": "node tests/finance.test.mjs && node tests/analytics.test.mjs && node tests/cards.test.mjs",
+    "test:server": "node tests/server.test.mjs"
+  },
+  "dependencies": {
+    "express": "5.1.0",
+    "pg": "8.16.3",
+    "helmet": "8.1.0",
+    "express-rate-limit": "8.1.0"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "0.5.8"
+  }
+}

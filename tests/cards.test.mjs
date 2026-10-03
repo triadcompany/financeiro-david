@@ -1,0 +1,13 @@
+import assert from 'node:assert/strict';
+import {extractFields,missingField} from '../dist/conversation.mjs';
+import {purchaseDate,cardSummary} from '../dist/cards.mjs';
+const D={pessoas:[{id:'d',nome:'David'}],contas:[],cartoes:[{id:'c',nome:'Itaú Azul',ativo:true,dia_fechamento:2,dia_vencimento:9,limite:1000}],categorias:[{id:'r',nome:'Restaurantes e delivery',ativa:true,tipo:'saida'}],fin_subcategorias:[],fin_planos:[],fin_movimentos:[],lancamentos:[]};
+const parsed=extractFields('Restaurante almoço em Jaraguá, 20,99, ontem cartão itau azul',D,'2026-10-02');
+assert.equal(parsed.valor,20.99);assert.equal(parsed.data_prevista,'2026-10-01');assert.equal(parsed.tipo,'saida');assert.equal(parsed.forma,'credito');assert.equal(parsed.cartao_id,'c');assert.equal(parsed.categoria_id,'r');assert.equal(missingField(parsed,D,'2026-10-02'),'pessoa_id');
+const charge=(id,month,valor,posted)=>({id,cartao_id:'c',tipo:'saida',forma:'credito',status:'pendente',fatura_mes:month+'-01',data_prevista:month+'-09',data_compra:'2026-10-01',valor,cobranca_efetivada:posted});
+D.fin_movimentos=[charge('a','2026-10',100,true),charge('b','2026-11',100,true),charge('s','2026-11',50,false)];
+let s=cardSummary(D,'2026-11')[0];assert.equal(s.gross,150);assert.equal(s.actual,100);assert.equal(s.projected,50);assert.equal(s.committed,200);assert.equal(s.available,800);assert.equal(purchaseDate(D.fin_movimentos[1],D),'2026-10-01');
+D.fin_movimentos.push({tipo:'pagamento_fatura',cartao_id:'c',fatura_mes:'2026-10-01',valor:100,status:'concluido'});
+s=cardSummary(D,'2026-10')[0];assert.equal(s.paid,100);assert.equal(s.remaining,0);assert.equal(s.committed,100);assert.equal(s.available,900);
+assert.equal(purchaseDate({forma:'credito',data_prevista:'2026-11-09'},D),null);
+console.log('PASS: exact restaurant message, missing owner only, purchase vs due, monthly totals, forecasts excluded from limit, paid installments release limit.');
