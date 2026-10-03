@@ -39,7 +39,7 @@ Na console do serviço App, crie/redefina o acesso de cada pessoa usando o ID co
 ```sh
 bash
 read -r -p 'E-mail: ' USER_EMAIL
-read -r -s -p 'Nova senha (mínimo 12 caracteres): ' USER_PASSWORD
+read -r -s -p 'Nova senha (mínimo 8 caracteres): ' USER_PASSWORD
 read -r -p 'ID da pessoa: ' PERSON_ID
 export USER_EMAIL USER_PASSWORD PERSON_ID
 npm run user
