@@ -93,3 +93,26 @@ Configure DATABASE_URL antes de migrar/iniciar. Não existe integração bancár
 O cálculo de caixa mantém transferências neutras e não duplica compras no cartão e pagamentos de fatura. As permissões de família são aplicadas no PostgreSQL. Senhas usam scrypt com salt; sessões são revogáveis e seus tokens são armazenados apenas como hash no banco.
 
 A versão VPS foi preparada sem alterar o site hospedado anterior. A transferência dos dados reais e a implantação na VPS precisam ser realizadas e conferidas no ambiente do proprietário.
+
+
+
+## Cadastro de contas e recuperação de senha
+
+A tela inicial tem **Criar conta** e **Esqueci minha senha**. Cadastro comum cria uma família independente, com uma pessoa e sem contas, cartões ou lançamentos de outras famílias. Convites continuam criando acesso à família indicada. O cadastro comum não verifica a propriedade do e-mail; use um endereço ao qual você tenha acesso. Senhas aceitam de 8 a 256 caracteres.
+
+Para enviar recuperação por e-mail, configure no serviço **APP** do EasyPanel:
+
+```env
+SMTP_HOST=smtp.seu-provedor.com
+SMTP_PORT=587
+SMTP_SECURE=false
+SMTP_USER=seu-usuario-smtp
+SMTP_PASSWORD=sua-senha-smtp
+SMTP_FROM=Finanças <acesso@seu-dominio.com>
+```
+
+Use as credenciais SMTP e um remetente autorizado pelo seu provedor. Para porta 465, use `SMTP_SECURE=true`. Na porta 587, a conexão exige STARTTLS. `APP_ORIGIN` deve ser o endereço HTTPS do aplicativo, sem barra no final. Salve e implante para aplicar as variáveis e a migração automática `004-password-resets.sql`.
+
+O link vale 30 minutos, só funciona uma vez e não aparece em logs nem na resposta da API. A troca de senha encerra todas as sessões anteriores. A resposta não revela se um e-mail está cadastrado; novos pedidos para o mesmo usuário têm intervalo de 2 minutos. Se o SMTP ainda não estiver configurado, a tela informa isso; o cadastro e login continuam disponíveis. Falhas de envio são registradas sem endereço, senha ou token.
+
+Validação: `npm test`, `npm run test:server` e `npm run test:auth`. Faça um teste com sua própria caixa de e-mail após configurar SMTP.

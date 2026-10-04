@@ -1,0 +1,14 @@
+import assert from 'node:assert/strict';import {mountAuth} from '../dist/auth.mjs';
+const elements=new Map();globalThis.document={getElementById:id=>{if(!elements.has(id))elements.set(id,{value:'',textContent:'',hidden:false,disabled:false,required:false});return elements.get(id);}};
+const $=id=>document.getElementById(id);globalThis.location={hash:'',pathname:'/',search:''};globalThis.history={replaceState:()=>{location.hash='';}};
+const calls=[];let sessions=0;const request=async(path,config)=>{calls.push({path,body:JSON.parse(config.body)});return path.includes('recover')?{message:'Verifique seu e-mail.'}:path.includes('reset')?{message:'Senha atualizada.'}:{access_token:'test'};};
+const submit=()=>$('loginform').onsubmit({preventDefault(){}});
+mountAuth({request,getInvite:()=>'',onSession:async()=>sessions++});
+assert.equal($('signup').hidden,false);assert.equal($('forgot').hidden,false);assert.equal($('auth-name').disabled,true);
+$('signup').onclick();assert.equal($('auth-name').required,true);assert.equal($('confirm-password').required,true);
+$('auth-name').value='Teste';$('email').value='user@example.test';$('password').value='password-123';$('confirm-password').value='mismatch';await submit();assert.equal(calls.length,0);assert.match($('login-message').textContent,/não conferem/);
+$('confirm-password').value='password-123';await submit();assert.equal(calls[0].path,'/auth/v1/signup');assert.equal(calls[0].body.name,'Teste');assert.equal(sessions,1);
+$('forgot').onclick();assert.equal($('password').disabled,true);await submit();assert.equal(calls[1].path,'/auth/v1/recover');assert.deepEqual(calls[1].body,{email:'user@example.test'});
+location.hash='#redefinir='+'a'.repeat(64);mountAuth({request,getInvite:()=>'',onSession:async()=>sessions++});assert.equal(location.hash,'');assert.equal($('email').disabled,true);assert.equal($('confirm-password').required,true);$('password').value='new-password-123';$('confirm-password').value='new-password-123';await submit();assert.equal(calls[2].body.token,'a'.repeat(64));assert.equal($('password').value,'');assert.equal($('signup').hidden,false);
+mountAuth({request,getInvite:()=>'invite-token',onSession:async()=>sessions++});$('signup').onclick();assert.equal($('auth-name').disabled,true);$('password').value='password-123';$('confirm-password').value='password-123';await submit();assert.equal(calls[3].body.invite,'invite-token');
+console.log('PASS auth UI: mode switching, required fields, password confirmation, registration, recovery, reset fragment and invitation payloads.');

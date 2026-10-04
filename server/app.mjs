@@ -1,6 +1,7 @@
 import express from 'express';import helmet from 'helmet';import {rateLimit} from 'express-rate-limit';import {randomBytes,randomUUID} from 'node:crypto';
+import {sendResetEmail,mailConfigured} from './mail.mjs';
 import {hashPassword,checkPassword,digest} from './password.mjs';
-export function createApp({pool,transaction}){
+export function createApp({pool,transaction,sendReset=sendResetEmail,canReset=mailConfigured}){
 const app=express();app.disable('x-powered-by');app.set('trust proxy',Number(process.env.TRUST_PROXY||0));
 app.use(helmet({contentSecurityPolicy:{directives:{'script-src':["'self'"],'style-src':["'self'","'unsafe-inline'"],'connect-src':["'self'"],'img-src':["'self'",'data:'],'upgrade-insecure-requests':process.env.NODE_ENV==='production'?[]:null}}}));
 app.use(express.json({limit:'1mb'}));
@@ -9,7 +10,42 @@ app.use('/api/auth',rateLimit({windowMs:15*60*1000,limit:30,standardHeaders:true
 const fail=(message,status=400)=>Object.assign(Error(message),{status});
 async function issue(c,id){const token=randomBytes(32).toString('hex'),expires=Math.floor(Date.now()/1000)+43200;await c.query("delete from auth.sessions where expires_at<now()");await c.query('insert into auth.sessions values($1,$2,to_timestamp($3))',[digest(token),id,expires]);return {access_token:token,refresh_token:token,expires_at:expires,expires_in:43200,user:{id}};}
 app.post('/api/auth/v1/token',async(req,res)=>{if(req.query.grant_type==='refresh_token'){const token=String(req.body.refresh_token||'');const r=await pool.query('select user_id from auth.sessions where token_hash=$1 and expires_at>now()',[digest(token)]);if(!r.rowCount)throw fail('Entre novamente.',401);const expires=Math.floor(Date.now()/1000)+43200;await pool.query('update auth.sessions set expires_at=to_timestamp($2) where token_hash=$1',[digest(token),expires]);return res.json({access_token:token,refresh_token:token,expires_at:expires,user:{id:r.rows[0].user_id}});}if(req.query.grant_type!=='password')throw fail('Operação inválida.');const email=String(req.body.email||'').trim().toLowerCase();const r=await pool.query('select id,password_hash from auth.users where lower(email)=$1',[email]);if(!await checkPassword(req.body.password,r.rows[0]?.password_hash))throw fail('E-mail ou senha inválidos.',401);res.json(await transaction(c=>issue(c,r.rows[0].id)));});
-app.post('/api/auth/v1/signup',async(req,res)=>{const email=String(req.body.email||'').trim().toLowerCase(),hash=await hashPassword(req.body.password);const session=await transaction(async c=>{const invite=await c.query('select * from public.fin_convites where token=$1 and lower(email)=$2 and not usado and expira_em>now() for update',[req.body.invite,email]);if(!invite.rowCount)throw fail('Convite inválido ou expirado.',403);const existing=await c.query('select id from auth.users where lower(email)=$1',[email]);if(existing.rowCount)throw fail('Esse e-mail já tem cadastro. Entre com sua senha.');const id=randomUUID();await c.query('insert into auth.users(id,email,email_confirmed_at,password_hash) values($1,$2,now(),$3)',[id,email,hash]);await c.query("select set_config('app.user_id',$1,true)",[id]);await c.query('select public.fin_aceitar_convite($1)',[req.body.invite]);return issue(c,id);});res.json(session);});
+const validEmail=value=>typeof value==='string'&&value.length<=254&&/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+const passwordHash=async value=>{if(typeof value!=='string'||value.length<8||value.length>256)throw fail('Use uma senha entre 8 e 256 caracteres.');return hashPassword(value);};
+app.post('/api/auth/v1/signup',async(req,res)=>{
+ const email=String(req.body.email||'').trim().toLowerCase(),name=String(req.body.name||'').trim();
+ if(!validEmail(email))throw fail('Informe um e-mail válido.');
+ if(!req.body.invite&&(!name||name.length>100))throw fail('Informe seu nome (até 100 caracteres).');
+ const hash=await passwordHash(req.body.password);
+ const session=await transaction(async c=>{
+  if(req.body.invite){const invite=await c.query('select * from public.fin_convites where token=$1 and lower(email)=$2 and not usado and expira_em>now() for update',[req.body.invite,email]);if(!invite.rowCount)throw fail('Convite inválido ou expirado.',403);}
+  const existing=await c.query('select id from auth.users where lower(email)=$1',[email]);if(existing.rowCount)throw fail('Esse e-mail já tem cadastro. Entre ou redefina sua senha.');
+  const id=randomUUID();await c.query('insert into auth.users(id,email,password_hash) values($1,$2,$3)',[id,email,hash]);
+  if(req.body.invite){await c.query('update auth.users set email_confirmed_at=now() where id=$1',[id]);await c.query("select set_config('app.user_id',$1,true)",[id]);await c.query('select public.fin_aceitar_convite($1)',[req.body.invite]);}
+  else{const family=randomUUID();await c.query('insert into public.familias(id,nome) values($1,$2)',[family,'Finanças de '+name]);await c.query('insert into public.pessoas(id,familia_id,usuario_id,nome) values($1,$2,$3,$4)',[randomUUID(),family,id,name]);}
+  return issue(c,id);
+ });res.json(session);
+});
+app.post('/api/auth/v1/recover',async(req,res)=>{
+ if(!canReset())throw fail('Recuperação por e-mail ainda não configurada. Contate o administrador.',503);
+ const email=String(req.body.email||'').trim().toLowerCase();if(!validEmail(email))throw fail('Informe um e-mail válido.');
+ const message='Se esse e-mail estiver cadastrado, você receberá um link para redefinir sua senha. Confira também o spam.';
+ const r=await pool.query('select id from auth.users where lower(email)=$1',[email]);
+ if(r.rowCount){const token=randomBytes(32).toString('hex'),hash=digest(token);
+ const created=await transaction(async c=>{await c.query('select id from auth.users where id=$1 for update',[r.rows[0].id]);const recent=await c.query("select 1 from auth.password_resets where user_id=$1 and created_at>now()-interval '2 minutes'",[r.rows[0].id]);if(recent.rowCount)return false;await c.query('delete from auth.password_resets where expires_at<now()');await c.query("insert into auth.password_resets(token_hash,user_id,expires_at) values($1,$2,now()+interval '30 minutes')",[hash,r.rows[0].id]);return true;});
+ if(created){try{await sendReset(email,new URL('/#redefinir='+token,process.env.APP_ORIGIN).href);}catch{await pool.query('delete from auth.password_resets where token_hash=$1',[hash]);console.error('Falha no envio da recuperação de senha. Verifique SMTP.');}}
+ }res.json({message});
+});
+app.post('/api/auth/v1/reset',async(req,res)=>{
+ const token=String(req.body.token||'');if(!/^[a-f0-9]{64}$/.test(token))throw fail('Link inválido ou expirado. Solicite outro.');
+ const hash=await passwordHash(req.body.password);
+ await transaction(async c=>{
+ const r=await c.query('select user_id from auth.password_resets where token_hash=$1',[digest(token)]);if(!r.rowCount)throw fail('Link inválido ou expirado. Solicite outro.');
+ const id=r.rows[0].user_id;await c.query('select id from auth.users where id=$1 for update',[id]);
+ const used=await c.query('delete from auth.password_resets where token_hash=$1 and expires_at>now() returning user_id',[digest(token)]);if(!used.rowCount)throw fail('Link inválido ou expirado. Solicite outro.');
+ await c.query('update auth.users set password_hash=$1,email_confirmed_at=now() where id=$2',[hash,id]);await c.query('delete from auth.sessions where user_id=$1',[id]);await c.query('delete from auth.password_resets where user_id=$1',[id]);
+ });res.json({message:'Senha atualizada. Entre com sua nova senha.'});
+});
 app.use('/api',async(req,res,next)=>{const token=(req.headers.authorization||'').replace(/^Bearer /,'');const r=await pool.query('select user_id from auth.sessions where token_hash=$1 and expires_at>now()',[digest(token)]);if(!r.rowCount)throw fail('Entre novamente.',401);req.user=r.rows[0].user_id;req.token=token;next();});
 app.post('/api/auth/v1/logout',async(req,res)=>{await pool.query('delete from auth.sessions where token_hash=$1',[digest(req.token)]);res.json(null);});
 const tables=new Set(['familias','pessoas','contas','cartoes','categorias','lancamentos','fin_subcategorias','fin_metas','fin_orcamentos','fin_movimentos','fin_planos','fin_convites']);
@@ -31,3 +67,4 @@ app.use(express.static(new URL('../dist',import.meta.url).pathname,{index:'index
 app.use((err,req,res,next)=>{const status=err.status||(['42501'].includes(err.code)?403:err.code?.startsWith('23')||err.code==='P0001'||err.code==='22P02'?400:500);if(status===500)console.error('Erro no servidor:',err.code||err.name);res.status(status).json({message:status===500?'Erro interno. Consulte o administrador.':err.code==='P0001'?err.message:err.status?err.message:'Dados inválidos ou operação não permitida.'});});
 return app;
 }
+

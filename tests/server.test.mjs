@@ -1,7 +1,7 @@
 import {PGlite} from '@electric-sql/pglite';import fs from 'node:fs/promises';import assert from 'node:assert/strict';import {randomUUID} from 'node:crypto';
 import {createApp} from '../server/app.mjs';import {hashPassword} from '../server/password.mjs';
 const db=new PGlite();const root=new URL('..',import.meta.url).pathname;
-for(const name of ['000-base.sql','upgrade.sql','cards-v2.sql','003-access.sql'])await db.exec(await fs.readFile(root+'/db/'+name,'utf8'));
+for(const name of ['000-base.sql','upgrade.sql','cards-v2.sql','003-access.sql','004-password-resets.sql'])await db.exec(await fs.readFile(root+'/db/'+name,'utf8'));
 const uid=randomUUID(),fam=randomUUID(),pid=randomUUID(),outsider=randomUUID(),fam2=randomUUID();
 await db.query('insert into auth.users(id,email,email_confirmed_at,password_hash) values($1,$2,now(),$3),($4,$5,now(),$3)',[uid,'david@test.local',await hashPassword('a-test-password-123'),outsider,'other@test.local']);
 await db.query('insert into familias values($1,$2),($3,$4)',[fam,'David e Carol',fam2,'Outro']);await db.query('insert into pessoas(id,familia_id,usuario_id,nome) values($1,$2,$3,$4),($5,$6,$7,$8)',[pid,fam,uid,'David',randomUUID(),fam2,outsider,'Outro']);
@@ -28,3 +28,4 @@ assert.equal((await call('/api/rest/v1/familias','GET',undefined,ct)).data[0].id
 assert.equal((await call('/api/auth/v1/logout','POST',{},token)).status,200);assert.equal((await call('/api/rest/v1/familias','GET',undefined,token)).status,401);
 console.log('PASS VPS: fresh schema, own login/logout, family isolation, protected writes, cards/installments/deletion, invitation signup and boot retry.');
 }finally{server.close();await db.close();}
+
