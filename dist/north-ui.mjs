@@ -1,0 +1,10 @@
+// Presentation only: navigation visibility and accessible labels. No app data or API access.
+const body=document.body,nav=document.getElementById('nav'),toggle=document.getElementById('north-menu-toggle'),backdrop=document.getElementById('north-menu-backdrop');
+const mobile=matchMedia('(max-width:900px)');
+function closeMenu(){body.classList.remove('north-menu-open');backdrop.hidden=true;sync();}
+function sync(){const signed=body.classList.contains('signed-in');if(!signed){if(body.classList.contains('north-menu-open')||body.classList.contains('north-compact'))body.classList.remove('north-menu-open','north-compact');backdrop.hidden=true;}const open=mobile.matches?body.classList.contains('north-menu-open'):!body.classList.contains('north-compact');toggle.setAttribute('aria-expanded',String(open&&signed));toggle.setAttribute('aria-label',mobile.matches?(open?'Fechar menu':'Abrir menu'):(open?'Recolher menu':'Expandir menu'));for(const button of nav.querySelectorAll('button')){const label=button.textContent.trim();button.setAttribute('aria-label',label);button.title=label;if(button.getAttribute('aria-pressed')==='true')button.setAttribute('aria-current','page');else button.removeAttribute('aria-current');}}
+toggle.addEventListener('click',()=>{if(mobile.matches){body.classList.toggle('north-menu-open');backdrop.hidden=!body.classList.contains('north-menu-open');}else body.classList.toggle('north-compact');sync();});
+backdrop.addEventListener('click',()=>{closeMenu();toggle.focus();});
+nav.addEventListener('click',e=>{if(e.target.closest('button')&&mobile.matches){closeMenu();document.getElementById('page-title').setAttribute('tabindex','-1');document.getElementById('page-title').focus({preventScroll:true});}});
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&body.classList.contains('north-menu-open')){closeMenu();toggle.focus();}});
+mobile.addEventListener('change',closeMenu);new MutationObserver(sync).observe(nav,{childList:true});new MutationObserver(sync).observe(body,{attributes:true,attributeFilter:['class']});sync();
