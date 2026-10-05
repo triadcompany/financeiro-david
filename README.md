@@ -98,7 +98,7 @@ A versão VPS foi preparada sem alterar o site hospedado anterior. A transferên
 
 ## Cadastro de contas e recuperação de senha
 
-A tela inicial tem **Criar conta** e **Esqueci minha senha**. Cadastro comum cria uma família independente, com uma pessoa e sem contas, cartões ou lançamentos de outras famílias. Convites continuam criando acesso à família indicada. O cadastro comum não verifica a propriedade do e-mail; use um endereço ao qual você tenha acesso. Senhas aceitam de 8 a 256 caracteres.
+A tela inicial tem **Criar conta** e **Esqueci minha senha**. Cadastro comum cria uma família independente, com uma pessoa e sem contas, cartões ou lançamentos de outras famílias. Convites de compartilhamento estão desativados; cada cadastro cria um painel independente. O cadastro comum não verifica a propriedade do e-mail; use um endereço ao qual você tenha acesso. Senhas aceitam de 8 a 256 caracteres.
 
 Para enviar recuperação por e-mail, configure no serviço **APP** do EasyPanel:
 
@@ -116,3 +116,15 @@ Use as credenciais SMTP e um remetente autorizado pelo seu provedor. Para porta 
 O link vale 30 minutos, só funciona uma vez e não aparece em logs nem na resposta da API. A troca de senha encerra todas as sessões anteriores. A resposta não revela se um e-mail está cadastrado; novos pedidos para o mesmo usuário têm intervalo de 2 minutos. Se o SMTP ainda não estiver configurado, a tela informa isso; o cadastro e login continuam disponíveis. Falhas de envio são registradas sem endereço, senha ou token.
 
 Validação: `npm test`, `npm run test:server` e `npm run test:auth`. Faça um teste com sua própria caixa de e-mail após configurar SMTP.
+
+
+## Lançamento simplificado e cadastros
+
+- Painéis independentes por usuário; o agrupamento interno `familia_id` permanece apenas como identificador de isolamento, sem novos convites. Cadastros e movimentos existentes são preservados.
+- 23 categorias iniciais (8 receitas e 15 despesas) e subcategorias, adicionadas ao abrir o painel com IDs estáveis por painel. Não substitui categorias personalizadas ou renomeadas.
+- Botões “Nova conta”, “Nova categoria” e “Nova subcategoria” no lançamento. O cadastro abre em uma janela curta, mantém o rascunho e seleciona o registro criado.
+- Data de hoje e usuário atual na conversa; conta ou cartão sugerido apenas quando houver uma única opção compatível. Valores sem verbo são aceitos, como “Mercado 85 no Pix”.
+- Toda mensagem passa por confirmação antes de gravar. Compras parceladas ambíguas perguntam se o valor é total ou por parcela. Não há IA externa.
+- Campos opcionais recolhidos no formulário: subcategoria, pagador e ajuste da data efetiva.
+
+Após atualizar a branch main, implante o aplicativo no EasyPanel. Nenhuma migração ou alteração nas variáveis é necessária para esta atualização.

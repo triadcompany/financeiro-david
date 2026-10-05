@@ -12,7 +12,7 @@
     "user": "node scripts/user.mjs",
     "export:supabase": "node scripts/export.mjs",
     "import:data": "node scripts/import.mjs",
-    "test": "node tests/finance.test.mjs && node tests/analytics.test.mjs && node tests/cards.test.mjs",
+    "test": "node tests/finance.test.mjs && node tests/analytics.test.mjs && node tests/cards.test.mjs && node tests/quick-entry.test.mjs",
     "test:server": "node tests/server.test.mjs",
     "test:auth": "node tests/auth.test.mjs && node tests/auth-ui.test.mjs"
   },

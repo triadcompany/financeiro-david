@@ -22,10 +22,10 @@ r=await call('/api/rest/v1/fin_movimentos','GET',undefined,token);assert.equal(r
 r=await call('/api/rest/v1/rpc/fin_excluir','POST',{p_id:mid,p_escopo:'serie'},token);assert.equal(r.status,200,JSON.stringify(r));assert.equal((await call('/api/rest/v1/fin_movimentos','GET',undefined,token)).data.length,0);
 assert.equal((await call('/api/rest/v1/rpc/not_allowed','POST',{},token)).status,404);
 assert.equal((await call('/api/rest/v1/pessoas?id=eq.'+pid,'PATCH',{usuario_id:outsider},token)).status,403);
-const carol=randomUUID();await db.query('insert into pessoas(id,familia_id,nome) values($1,$2,$3)',[carol,fam,'Carol']);r=await call('/api/rest/v1/fin_convites','POST',{id:randomUUID(),familia_id:fam,pessoa_id:carol,email:'carol@test.local'},token);assert.equal(r.status,200,JSON.stringify(r));const invite=r.data[0].token;
-r=await call('/api/auth/v1/signup','POST',{email:'carol@test.local',password:'another-password-123',invite});assert.equal(r.status,200,JSON.stringify(r));const ct=r.data.access_token;r=await call('/api/rest/v1/rpc/fin_aceitar_convite','POST',{p_token:invite},ct);assert.equal(r.status,200);
-assert.equal((await call('/api/rest/v1/familias','GET',undefined,ct)).data[0].id,fam);
+assert.equal((await call('/api/rest/v1/fin_convites','POST',{},token)).status,404);
+assert.equal((await call('/api/rest/v1/rpc/fin_aceitar_convite','POST',{},token)).status,404);
+assert.equal((await call('/api/auth/v1/signup','POST',{name:'Outro',email:'invite@test.local',password:'password-123',invite:'legacy-token'})).status,403);
 assert.equal((await call('/api/auth/v1/logout','POST',{},token)).status,200);assert.equal((await call('/api/rest/v1/familias','GET',undefined,token)).status,401);
-console.log('PASS VPS: fresh schema, own login/logout, family isolation, protected writes, cards/installments/deletion, invitation signup and boot retry.');
+console.log('PASS VPS: fresh schema, own login/logout, family isolation, protected writes, cards/installments/deletion, disabled shared invitations.');
 }finally{server.close();await db.close();}
 

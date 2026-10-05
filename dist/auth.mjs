@@ -7,7 +7,7 @@ export function mountAuth({request,getInvite,onSession}){
   mode=next;$('login-message').textContent='';$('password').value='';$('confirm-password').value='';
   const signup=mode==='signup',reset=mode==='reset',recover=mode==='recover',newPassword=signup||reset;
   $('login-title').textContent={login:getInvite()?'Acesse o painel da família':'Entre no seu painel',signup:getInvite()?'Crie seu acesso à família':'Crie sua conta',recover:'Esqueci minha senha',reset:'Defina sua nova senha'}[mode];
-  $('auth-description').textContent=signup?(getInvite()?'Você terá acesso aos dados da família que enviou o convite.':'Seu painel será criado do zero, com seus dados separados das outras contas.'):recover?'Enviaremos um link de recuperação para seu e-mail.':reset?'Escolha uma senha com pelo menos 8 caracteres.':'';
+  $('auth-description').textContent=signup?(getInvite()?'Você terá acesso aos dados da família que enviou o convite.':'Seu painel é individual. Contas, cartões, categorias e lançamentos ficam separados dos outros usuários.'):recover?'Enviaremos um link de recuperação para seu e-mail.':reset?'Escolha uma senha com pelo menos 8 caracteres.':'';
   for(const [id,visible]of [['name',signup&&!getInvite()],['email',!reset],['password',!recover],['confirm',newPassword]]){
    $(id+'-label').hidden=!visible;const field=$(id==='name'?'auth-name':id==='confirm'?'confirm-password':id);field.disabled=!visible;field.required=visible;
   }

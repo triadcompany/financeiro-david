@@ -14,15 +14,15 @@ const validEmail=value=>typeof value==='string'&&value.length<=254&&/^[^\s@]+@[^
 const passwordHash=async value=>{if(typeof value!=='string'||value.length<8||value.length>256)throw fail('Use uma senha entre 8 e 256 caracteres.');return hashPassword(value);};
 app.post('/api/auth/v1/signup',async(req,res)=>{
  const email=String(req.body.email||'').trim().toLowerCase(),name=String(req.body.name||'').trim();
+ if(req.body.invite)throw fail('Cada usuário deve criar sua própria conta. Convites foram desativados.',403);
  if(!validEmail(email))throw fail('Informe um e-mail válido.');
- if(!req.body.invite&&(!name||name.length>100))throw fail('Informe seu nome (até 100 caracteres).');
+ if(!name||name.length>100)throw fail('Informe seu nome (até 100 caracteres).');
  const hash=await passwordHash(req.body.password);
  const session=await transaction(async c=>{
-  if(req.body.invite){const invite=await c.query('select * from public.fin_convites where token=$1 and lower(email)=$2 and not usado and expira_em>now() for update',[req.body.invite,email]);if(!invite.rowCount)throw fail('Convite inválido ou expirado.',403);}
+
   const existing=await c.query('select id from auth.users where lower(email)=$1',[email]);if(existing.rowCount)throw fail('Esse e-mail já tem cadastro. Entre ou redefina sua senha.');
   const id=randomUUID();await c.query('insert into auth.users(id,email,password_hash) values($1,$2,$3)',[id,email,hash]);
-  if(req.body.invite){await c.query('update auth.users set email_confirmed_at=now() where id=$1',[id]);await c.query("select set_config('app.user_id',$1,true)",[id]);await c.query('select public.fin_aceitar_convite($1)',[req.body.invite]);}
-  else{const family=randomUUID();await c.query('insert into public.familias(id,nome) values($1,$2)',[family,'Finanças de '+name]);await c.query('insert into public.pessoas(id,familia_id,usuario_id,nome) values($1,$2,$3,$4)',[randomUUID(),family,id,name]);}
+  const family=randomUUID();await c.query('insert into public.familias(id,nome) values($1,$2)',[family,'Finanças de '+name]);await c.query('insert into public.pessoas(id,familia_id,usuario_id,nome) values($1,$2,$3,$4)',[randomUUID(),family,id,name]);
   return issue(c,id);
  });res.json(session);
 });
@@ -48,12 +48,10 @@ app.post('/api/auth/v1/reset',async(req,res)=>{
 });
 app.use('/api',async(req,res,next)=>{const token=(req.headers.authorization||'').replace(/^Bearer /,'');const r=await pool.query('select user_id from auth.sessions where token_hash=$1 and expires_at>now()',[digest(token)]);if(!r.rowCount)throw fail('Entre novamente.',401);req.user=r.rows[0].user_id;req.token=token;next();});
 app.post('/api/auth/v1/logout',async(req,res)=>{await pool.query('delete from auth.sessions where token_hash=$1',[digest(req.token)]);res.json(null);});
-const tables=new Set(['familias','pessoas','contas','cartoes','categorias','lancamentos','fin_subcategorias','fin_metas','fin_orcamentos','fin_movimentos','fin_planos','fin_convites']);
-const writes=new Set(['contas','cartoes','categorias','fin_subcategorias','fin_metas','fin_orcamentos','fin_movimentos','fin_planos','fin_convites']);
-const rpcs={fin_criar:['p_id','p_familia','p_modalidade','p_inicio','p_fim','p_frequencia','p_quantidade','p_dados'],fin_atualizar_recorrencias:[],fin_editar:['p_id','p_futuras','p_descricao','p_valor','p_pessoa','p_categoria','p_subcategoria','p_data','p_real'],fin_editar_compra:['p_id','p_futuras','p_descricao','p_valor','p_pessoa','p_categoria','p_subcategoria','p_data','p_real','p_compra'],fin_cancelar:['p_id','p_futuras'],fin_excluir:['p_id','p_escopo'],fin_confirmar_cobranca:['p_id','p_efetivada'],fin_versao_cartoes:[],fin_aceitar_convite:['p_token']};
-app.post('/api/rest/v1/rpc/:name',async(req,res)=>{const keys=rpcs[req.params.name];if(!keys)throw fail('Função indisponível.',404);if(req.params.name==='fin_aceitar_convite'){// Signup has already consumed the capability; allow its subsequent boot retry.
- const found=await pool.query('select 1 from public.fin_convites c join public.pessoas p on p.id=c.pessoa_id where c.token=$1 and c.usado and p.usuario_id=$2',[req.body.p_token,req.user]);if(found.rowCount)return res.json('Acesso vinculado com sucesso');}
-const result=await transaction(async c=>(await c.query(`select public.${req.params.name}(${keys.map((k,i)=>`${k} => $${i+1}`).join(',')}) as result`,keys.map(k=>req.body[k]??null))).rows[0].result,req.user);res.json(result);});
+const tables=new Set(['familias','pessoas','contas','cartoes','categorias','lancamentos','fin_subcategorias','fin_metas','fin_orcamentos','fin_movimentos','fin_planos']);
+const writes=new Set(['contas','cartoes','categorias','fin_subcategorias','fin_metas','fin_orcamentos','fin_movimentos','fin_planos']);
+const rpcs={fin_criar:['p_id','p_familia','p_modalidade','p_inicio','p_fim','p_frequencia','p_quantidade','p_dados'],fin_atualizar_recorrencias:[],fin_editar:['p_id','p_futuras','p_descricao','p_valor','p_pessoa','p_categoria','p_subcategoria','p_data','p_real'],fin_editar_compra:['p_id','p_futuras','p_descricao','p_valor','p_pessoa','p_categoria','p_subcategoria','p_data','p_real','p_compra'],fin_cancelar:['p_id','p_futuras'],fin_excluir:['p_id','p_escopo'],fin_confirmar_cobranca:['p_id','p_efetivada'],fin_versao_cartoes:[]};
+app.post('/api/rest/v1/rpc/:name',async(req,res)=>{const keys=rpcs[req.params.name];if(!keys)throw fail('Função indisponível.',404);const result=await transaction(async c=>(await c.query(`select public.${req.params.name}(${keys.map((k,i)=>`${k} => $${i+1}`).join(',')}) as result`,keys.map(k=>req.body[k]??null))).rows[0].result,req.user);res.json(result);});
 const columns=new Map();async function tableColumns(c,t){if(!columns.has(t))columns.set(t,new Set((await c.query("select column_name from information_schema.columns where table_schema='public' and table_name=$1",[t])).rows.map(x=>x.column_name)));return columns.get(t);}
 app.all('/api/rest/v1/:table',async(req,res)=>{const t=req.params.table;if(!tables.has(t))throw fail('Tabela indisponível.',404);const result=await transaction(async c=>{const allowed=await tableColumns(c,t);const vals=[],where=[];for(const [key,value]of Object.entries(req.query)){if(['select','order','limit','offset','on_conflict'].includes(key))continue;if(!['id','familia_id','plano_id'].includes(key)||!allowed.has(key)||typeof value!=='string'||!value.startsWith('eq.'))throw fail('Filtro inválido.');vals.push(value.slice(3));where.push(`"${key}"=$${vals.length}`);}const filter=where.length?' where '+where.join(' and '):'';
 if(req.method==='GET'){const limit=Math.min(500,Math.max(1,parseInt(req.query.limit)||500)),offset=Math.max(0,parseInt(req.query.offset)||0);return(await c.query(`select * from public.${t}${filter} order by id limit ${limit} offset ${offset}`,vals)).rows;}
