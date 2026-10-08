@@ -96,6 +96,20 @@ app.post('/api/agent/whatsapp/resolve',waLimit,async(req,res)=>{
  if(!r.rowCount)return res.json({status:'unlinked',linked:false});
  return res.json({status:'linked',linked:true,user_id:r.rows[0].user_id});
 });
+// Idempotency gate for WhatsApp agent: no financial writes.
+app.post('/api/agent/events/claim',waLimit,async(req,res)=>{
+ const secret=process.env.NORTH_AGENT_API_KEY||'',key=req.get('x-north-agent-key')||'';
+ if(secret.length<32)return res.status(503).json({status:'unavailable'});
+ if(!key||!timingSafeEqual(Buffer.from(digest(secret)),Buffer.from(digest(key))))return res.status(401).json({status:'unauthorized'});
+ const data=req.body||{},phone=waPhone(data.sender_phone);
+ const eventId=data.external_event_id;
+ if(data.accepted!==true||data.provider!=='evolution'||data.channel!=='whatsapp'||data.instance!=='financeiro-david'||!phone||typeof eventId!=='string'||eventId.length<1||eventId.length>200)return res.status(400).json({status:'invalid_payload'});
+ const linked=await pool.query('select user_id from public.north_whatsapp_links where phone=$1',[phone]);
+ if(!linked.rowCount)return res.json({status:'unlinked',linked:false,is_new:false});
+ const userId=linked.rows[0].user_id;
+ const result=await pool.query('insert into public.north_agent_events(instance,external_event_id,user_id) values($1,$2,$3) on conflict(instance,external_event_id) do nothing returning id',['financeiro-david',eventId,userId]);
+ res.json({status:result.rowCount?'claimed':'duplicate',linked:true,is_new:!!result.rowCount,user_id:userId});
+});
 app.use('/api',async(req,res,next)=>{const token=(req.headers.authorization||'').replace(/^Bearer /,'');const r=await pool.query('select user_id from auth.sessions where token_hash=$1 and expires_at>now()',[digest(token)]);if(!r.rowCount)throw fail('Entre novamente.',401);req.user=r.rows[0].user_id;req.token=token;next();});
 app.get('/api/whatsapp/link/status',async(req,res)=>{const r=await pool.query('select phone,verified_at from public.north_whatsapp_links where user_id=$1',[req.user]);res.json({connected:!!r.rowCount,phone:r.rows[0]?.phone||null,verified_at:r.rows[0]?.verified_at||null});});
 app.post('/api/whatsapp/link/request',waLimit,async(req,res)=>{
