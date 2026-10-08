@@ -12,5 +12,6 @@ create table if not exists public.north_whatsapp_challenges (
  attempts int not null default 0,
  created_at timestamptz not null default now()
 );
+create unique index if not exists north_whatsapp_challenges_phone on public.north_whatsapp_challenges(phone);
 create index if not exists north_whatsapp_challenges_expires on public.north_whatsapp_challenges(expires_at);
 revoke all on public.north_whatsapp_links, public.north_whatsapp_challenges from public;
