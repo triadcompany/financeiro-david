@@ -1,4 +1,4 @@
-import express from 'express';import helmet from 'helmet';import {rateLimit} from 'express-rate-limit';import {randomBytes,randomUUID} from 'node:crypto';
+import express from 'express';import helmet from 'helmet';import {rateLimit} from 'express-rate-limit';import {randomBytes,randomUUID,timingSafeEqual} from 'node:crypto';
 import {sendResetEmail,mailConfigured} from './mail.mjs';
 import {hashPassword,checkPassword,digest} from './password.mjs';
 export function createApp({pool,transaction,sendReset=sendResetEmail,canReset=mailConfigured}){
@@ -45,6 +45,17 @@ app.post('/api/auth/v1/reset',async(req,res)=>{
  const used=await c.query('delete from auth.password_resets where token_hash=$1 and expires_at>now() returning user_id',[digest(token)]);if(!used.rowCount)throw fail('Link inválido ou expirado. Solicite outro.');
  await c.query('update auth.users set password_hash=$1,email_confirmed_at=now() where id=$2',[hash,id]);await c.query('delete from auth.sessions where user_id=$1',[id]);await c.query('delete from auth.password_resets where user_id=$1',[id]);
  });res.json({message:'Senha atualizada. Entre com sua nova senha.'});
+});
+// Secure, test-only entry for the NORTH n8n agent. Does not modify financial records.
+app.post('/api/agent/inbound',rateLimit({windowMs:15*60*1000,limit:60,standardHeaders:true,legacyHeaders:false}),(req,res)=>{
+ const configured=process.env.NORTH_AGENT_API_KEY||'';
+ if(configured.length<32)return res.status(503).json({ok:false,error:'agent_not_configured'});
+ const supplied=req.get('x-north-agent-key')||'';
+ const expected=digest(configured),actual=digest(supplied);
+ if(!supplied||!timingSafeEqual(Buffer.from(expected),Buffer.from(actual)))return res.status(401).json({ok:false,error:'unauthorized'});
+ const data=req.body;
+ if(!data||typeof data!=='object'||Array.isArray(data)||data.accepted!==true||!['text','audio','image','document'].includes(data.message_type)||typeof data.external_event_id!=='string'||data.external_event_id.length<1||data.external_event_id.length>200)return res.status(400).json({ok:false,error:'invalid_payload'});
+ res.status(202).json({ok:true,status:'received_test_only',event_id:data.external_event_id,processed:false,recorded:false});
 });
 app.use('/api',async(req,res,next)=>{const token=(req.headers.authorization||'').replace(/^Bearer /,'');const r=await pool.query('select user_id from auth.sessions where token_hash=$1 and expires_at>now()',[digest(token)]);if(!r.rowCount)throw fail('Entre novamente.',401);req.user=r.rows[0].user_id;req.token=token;next();});
 app.post('/api/auth/v1/logout',async(req,res)=>{await pool.query('delete from auth.sessions where token_hash=$1',[digest(req.token)]);res.json(null);});
