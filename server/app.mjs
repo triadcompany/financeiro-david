@@ -83,6 +83,19 @@ app.post('/api/agent/whatsapp/verify',waLimit,async(req,res)=>{
   await client.query('COMMIT');return res.json({status:'verified'});
  }catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
 });
+// Resolve the verified WhatsApp account; no financial data is exposed here.
+app.post('/api/agent/whatsapp/resolve',waLimit,async(req,res)=>{
+ const configured=process.env.NORTH_AGENT_API_KEY||'';
+ const supplied=req.get('x-north-agent-key')||'';
+ if(configured.length<32)return res.status(503).json({status:'unavailable'});
+ if(!supplied||!timingSafeEqual(Buffer.from(digest(configured)),Buffer.from(digest(supplied))))return res.status(401).json({status:'unauthorized'});
+ const data=req.body||{};
+ const phone=waPhone(data.sender_phone);
+ if(data.accepted!==true||data.provider!=='evolution'||data.instance!=='financeiro-david'||data.channel!=='whatsapp'||!phone||typeof data.external_event_id!=='string'||data.external_event_id.length<1||data.external_event_id.length>200)return res.status(400).json({status:'invalid_payload'});
+ const r=await pool.query('select user_id from public.north_whatsapp_links where phone=$1',[phone]);
+ if(!r.rowCount)return res.json({status:'unlinked',linked:false});
+ return res.json({status:'linked',linked:true,user_id:r.rows[0].user_id});
+});
 app.use('/api',async(req,res,next)=>{const token=(req.headers.authorization||'').replace(/^Bearer /,'');const r=await pool.query('select user_id from auth.sessions where token_hash=$1 and expires_at>now()',[digest(token)]);if(!r.rowCount)throw fail('Entre novamente.',401);req.user=r.rows[0].user_id;req.token=token;next();});
 app.get('/api/whatsapp/link/status',async(req,res)=>{const r=await pool.query('select phone,verified_at from public.north_whatsapp_links where user_id=$1',[req.user]);res.json({connected:!!r.rowCount,phone:r.rows[0]?.phone||null,verified_at:r.rows[0]?.verified_at||null});});
 app.post('/api/whatsapp/link/request',waLimit,async(req,res)=>{
