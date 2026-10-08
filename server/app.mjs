@@ -111,6 +111,44 @@ app.post('/api/agent/events/claim',waLimit,async(req,res)=>{
  res.json({status:result.rowCount?'claimed':'duplicate',linked:true,is_new:!!result.rowCount,user_id:userId});
 });
 app.use('/api',async(req,res,next)=>{const token=(req.headers.authorization||'').replace(/^Bearer /,'');const r=await pool.query('select user_id from auth.sessions where token_hash=$1 and expires_at>now()',[digest(token)]);if(!r.rowCount)throw fail('Entre novamente.',401);req.user=r.rows[0].user_id;req.token=token;next();});
+// Draft-only financial proposals, scoped to the authenticated NORTH user.
+const cleanDraft=input=>{
+ if(!input||typeof input!=='object'||Array.isArray(input))throw fail('Proposta inválida.');
+ const {tipo,descricao,valor,data,forma_pagamento,categoria,subcategoria,cartao_ou_conta,pessoa,parcelas}=input;
+ if(!['entrada','despesa'].includes(tipo)||typeof descricao!=='string'||!descricao.trim()||descricao.length>250)throw fail('Tipo ou descrição inválidos.');
+ const amount=Number(valor);
+ if(!Number.isFinite(amount)||amount<=0||amount>999999999)throw fail('Valor inválido.');
+ if(typeof data!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(data)||Number.isNaN(Date.parse(data+'T12:00:00Z')))throw fail('Data inválida.');
+ const optional=v=>v==null?null:(typeof v==='string'&&v.length<=120?v:null);
+ if([forma_pagamento,categoria,subcategoria,cartao_ou_conta,pessoa].some(v=>v!=null&&optional(v)===null))throw fail('Campo inválido.');
+ const count=parcelas==null?1:Number(parcelas);
+ if(!Number.isInteger(count)||count<1||count>600)throw fail('Parcelas inválidas.');
+ return {tipo,descricao:descricao.trim(),valor:Math.round(amount*100)/100,data,forma_pagamento:optional(forma_pagamento),categoria:optional(categoria),subcategoria:optional(subcategoria),cartao_ou_conta:optional(cartao_ou_conta),pessoa:optional(pessoa),parcelas:count};
+};
+app.get('/api/agent/drafts',async(req,res)=>{
+ const r=await pool.query('select id,external_event_id,payload,status,created_at from public.north_agent_drafts where user_id=$1 order by created_at desc limit 50',[req.user]);
+ res.json(r.rows);
+});
+app.post('/api/agent/drafts',async(req,res)=>{
+ const event=String(req.body?.external_event_id||'');
+ if(!event||event.length>200)return res.status(400).json({message:'Identificador obrigatório.'});
+ const payload=cleanDraft(req.body?.payload);
+ const r=await pool.query("insert into public.north_agent_drafts(user_id,external_event_id,payload) values($1,$2,$3) on conflict(user_id,external_event_id) do nothing returning id,status,payload",[req.user,event,JSON.stringify(payload)]);
+ if(!r.rowCount)return res.status(409).json({status:'duplicate_draft'});
+ res.status(201).json({...r.rows[0],financial_recorded:false,confirmation_required:true});
+});
+app.post('/api/agent/drafts/:id/preview-confirm',async(req,res)=>{
+ if(!/^[a-f0-9-]{36}$/i.test(req.params.id))return res.status(400).json({message:'Identificador inválido.'});
+ const r=await pool.query("update public.north_agent_drafts set status='confirmed_preview',updated_at=now() where id=$1 and user_id=$2 and status='pending' returning id,status",[req.params.id,req.user]);
+ if(!r.rowCount)return res.status(404).json({message:'Proposta não encontrada ou já respondida.'});
+ res.json({...r.rows[0],financial_recorded:false,message:'Confirmação recebida em modo de teste; nenhum lançamento financeiro criado.'});
+});
+app.post('/api/agent/drafts/:id/discard',async(req,res)=>{
+ if(!/^[a-f0-9-]{36}$/i.test(req.params.id))return res.status(400).json({message:'Identificador inválido.'});
+ const r=await pool.query("update public.north_agent_drafts set status='discarded',updated_at=now() where id=$1 and user_id=$2 and status='pending' returning id,status",[req.params.id,req.user]);
+ if(!r.rowCount)return res.status(404).json({message:'Proposta não encontrada ou já respondida.'});
+ res.json(r.rows[0]);
+});
 app.get('/api/whatsapp/link/status',async(req,res)=>{const r=await pool.query('select phone,verified_at from public.north_whatsapp_links where user_id=$1',[req.user]);res.json({connected:!!r.rowCount,phone:r.rows[0]?.phone||null,verified_at:r.rows[0]?.verified_at||null});});
 app.post('/api/whatsapp/link/request',waLimit,async(req,res)=>{
  const phone=waPhone(req.body?.phone);
