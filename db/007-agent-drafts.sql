@@ -1,0 +1,1 @@
+create table if not exists public.north_agent_drafts (id uuid primary key default gen_random_uuid(), user_id uuid not null references auth.users(id), external_event_id text not null, payload jsonb not null, status text not null default 'pending', created_at timestamptz not null default now(), unique(user_id,external_event_id));
