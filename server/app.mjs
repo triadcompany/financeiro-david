@@ -145,6 +145,24 @@ app.post('/api/agent/whatsapp/drafts/preview-confirm',waLimit,async(req,res)=>{
  if(!r.rowCount)return res.status(409).json({status:'already_handled'});
  res.json({status:'confirmed_preview',id:r.rows[0].id,financial_recorded:false,message:'Confirmação de teste recebida. Nenhum lançamento foi registrado.'});
 });
+// Short conversational replies: never generate real movements.
+app.post('/api/agent/whatsapp/drafts/reply',waLimit,async(req,res)=>{
+ if(!agentAuth(req,res))return;
+ const userId=await agentLinkedUser(req,res);if(!userId)return;
+ const raw=req.body?.text;
+ if(typeof raw!=='string'||raw.length>120)return res.status(400).json({status:'invalid_reply'});
+ const normalized=raw.trim().normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[.!?]+$/g,'').trim();
+ const accepts=new Set(['sim','s','ok','okay','confirmar','confirmo','pode registrar','pode lancar','pode salvar','isso']);
+ const declines=new Set(['nao','n','cancelar','cancela','descartar','descarte']);
+ if(!accepts.has(normalized)&&!declines.has(normalized))return res.json({status:'not_confirmation',handled:false});
+ const pending=await pool.query("select id from public.north_agent_drafts where user_id=$1 and status='pending' order by created_at desc limit 2",[userId]);
+ if(pending.rowCount===0)return res.json({status:'no_pending',handled:true,financial_recorded:false});
+ if(pending.rowCount>1)return res.json({status:'multiple_pending',handled:true,financial_recorded:false,message:'Há mais de uma proposta pendente; identifique qual deseja confirmar ou cancelar.'});
+ const status=accepts.has(normalized)?'confirmed_preview':'discarded';
+ const updated=await pool.query("update public.north_agent_drafts set status=$1,updated_at=now() where id=$2 and user_id=$3 and status='pending' returning id,status",[status,pending.rows[0].id,userId]);
+ if(!updated.rowCount)return res.status(409).json({status:'already_handled',handled:true,financial_recorded:false});
+ return res.json({status,handled:true,id:updated.rows[0].id,financial_recorded:false,message:status==='confirmed_preview'?'Confirmação recebida em modo de teste. Nenhuma movimentação foi registrada.':'Proposta descartada.'});
+});
 app.use('/api',async(req,res,next)=>{const token=(req.headers.authorization||'').replace(/^Bearer /,'');const r=await pool.query('select user_id from auth.sessions where token_hash=$1 and expires_at>now()',[digest(token)]);if(!r.rowCount)throw fail('Entre novamente.',401);req.user=r.rows[0].user_id;req.token=token;next();});
 // Draft-only financial proposals, scoped to the authenticated NORTH user.
 const cleanDraft=input=>{
