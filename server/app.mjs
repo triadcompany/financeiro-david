@@ -124,6 +124,16 @@ async function agentLinkedUser(req,res){
  if(!r.rowCount){res.status(404).json({status:'unlinked'});return null;}
  return r.rows[0].user_id;
 }
+// Return the actual family category catalog for the linked WhatsApp user.
+app.post('/api/agent/whatsapp/catalog',waLimit,async(req,res)=>{
+ if(!agentAuth(req,res))return;
+ const userId=await agentLinkedUser(req,res);if(!userId)return;
+ const families=await pool.query('select distinct familia_id from public.pessoas where usuario_id=$1',[userId]);
+ if(families.rowCount!==1)return res.status(409).json({status:'family_not_resolved'});
+ const familyId=families.rows[0].familia_id;
+ const categories=await pool.query("select c.id,c.nome,c.tipo,coalesce((select json_agg(s.nome order by s.nome) from public.fin_subcategorias s where s.familia_id=c.familia_id and s.categoria_id=c.id),'[]'::json) as subcategorias from public.categorias c where c.familia_id=$1 and c.ativa=true order by c.tipo,c.nome",[familyId]);
+ res.json({status:'ok',categorias:categories.rows});
+});
 app.post('/api/agent/whatsapp/drafts',waLimit,async(req,res)=>{
  if(!agentAuth(req,res))return;
  const userId=await agentLinkedUser(req,res);if(!userId)return;
