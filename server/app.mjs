@@ -57,7 +57,46 @@ app.post('/api/agent/inbound',rateLimit({windowMs:15*60*1000,limit:60,standardHe
  if(!data||typeof data!=='object'||Array.isArray(data)||data.accepted!==true||!['text','audio','image','document'].includes(data.message_type)||typeof data.external_event_id!=='string'||data.external_event_id.length<1||data.external_event_id.length>200)return res.status(400).json({ok:false,error:'invalid_payload'});
  res.status(202).json({ok:true,status:'received_test_only',event_id:data.external_event_id,processed:false,recorded:false});
 });
+// WhatsApp pairing: the logged-in user requests a code, then sends it from the same number.
+const waPhone=value=>{const n=String(value||'').replace(/\D/g,'');return /^55\d{10,11}$/.test(n)?n:null;};
+const waHash=(user,code)=>digest(user+':'+code+':'+(process.env.NORTH_AGENT_API_KEY||''));
+const waLimit=rateLimit({windowMs:15*60*1000,limit:30,standardHeaders:true,legacyHeaders:false});
+app.post('/api/agent/whatsapp/verify',waLimit,async(req,res)=>{
+ const secret=process.env.NORTH_AGENT_API_KEY||'',supplied=req.get('x-north-agent-key')||'';
+ if(secret.length<32)return res.status(503).json({message:'Integração não configurada.'});
+ if(!supplied||!timingSafeEqual(Buffer.from(digest(secret)),Buffer.from(digest(supplied))))return res.status(401).json({message:'Não autorizado.'});
+ const data=req.body||{},phone=waPhone(data.sender_phone),match=/^NORTH\s+(\d{6})$/i.exec(String(data.text||'').trim());
+ if(data.provider!=='evolution'||data.instance!=='financeiro-david'||data.accepted!==true||!phone||!match)return res.json({status:'not_verification'});
+ const client=await pool.connect();
+ try{
+  await client.query('BEGIN');
+  const result=await client.query("select user_id,code_hash,attempts from public.north_whatsapp_challenges where phone=$1 and expires_at>now() for update",[phone]);
+  if(!result.rowCount){await client.query('COMMIT');return res.json({status:'invalid_or_expired'});}
+  const item=result.rows[0];
+  await client.query('update public.north_whatsapp_challenges set attempts=attempts+1 where user_id=$1',[item.user_id]);
+  if(item.attempts>=5||!timingSafeEqual(Buffer.from(waHash(item.user_id,match[1])),Buffer.from(item.code_hash))){await client.query('COMMIT');return res.json({status:'invalid_or_expired'});}
+  const taken=await client.query('select 1 from public.north_whatsapp_links where phone=$1 and user_id<>$2',[phone,item.user_id]);
+  if(taken.rowCount){await client.query('COMMIT');return res.status(409).json({status:'already_linked'});}
+  await client.query('delete from public.north_whatsapp_links where user_id=$1',[item.user_id]);
+  await client.query('insert into public.north_whatsapp_links(user_id,phone) values($1,$2)',[item.user_id,phone]);
+  await client.query('delete from public.north_whatsapp_challenges where user_id=$1',[item.user_id]);
+  await client.query('COMMIT');return res.json({status:'verified'});
+ }catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
+});
 app.use('/api',async(req,res,next)=>{const token=(req.headers.authorization||'').replace(/^Bearer /,'');const r=await pool.query('select user_id from auth.sessions where token_hash=$1 and expires_at>now()',[digest(token)]);if(!r.rowCount)throw fail('Entre novamente.',401);req.user=r.rows[0].user_id;req.token=token;next();});
+app.get('/api/whatsapp/link/status',async(req,res)=>{const r=await pool.query('select phone,verified_at from public.north_whatsapp_links where user_id=$1',[req.user]);res.json({connected:!!r.rowCount,phone:r.rows[0]?.phone||null,verified_at:r.rows[0]?.verified_at||null});});
+app.post('/api/whatsapp/link/request',waLimit,async(req,res)=>{
+ const phone=waPhone(req.body?.phone);
+ if(!phone)return res.status(400).json({message:'Informe o número com DDD e código do Brasil (+55).'});
+ const taken=await pool.query('select 1 from public.north_whatsapp_links where phone=$1 and user_id<>$2',[phone,req.user]);
+ if(taken.rowCount)return res.status(409).json({message:'Número vinculado a outro usuário.'});
+ const recent=await pool.query("select 1 from public.north_whatsapp_challenges where user_id=$1 and created_at>now()-interval '60 seconds'",[req.user]);
+ if(recent.rowCount)return res.status(429).json({message:'Aguarde 60 segundos para solicitar outro código.'});
+ const code=String(Math.floor(Math.random()*1000000)).padStart(6,'0');
+ await pool.query("insert into public.north_whatsapp_challenges(user_id,phone,code_hash,expires_at) values($1,$2,$3,now()+interval '10 minutes') on conflict(user_id) do update set phone=excluded.phone,code_hash=excluded.code_hash,expires_at=excluded.expires_at,attempts=0,created_at=now()",[req.user,phone,waHash(req.user,code)]);
+ res.json({status:'pending',phone,code,expires_in_seconds:600});
+});
+app.delete('/api/whatsapp/link',async(req,res)=>{await pool.query('delete from public.north_whatsapp_challenges where user_id=$1',[req.user]);await pool.query('delete from public.north_whatsapp_links where user_id=$1',[req.user]);res.json({connected:false});});
 app.post('/api/auth/v1/logout',async(req,res)=>{await pool.query('delete from auth.sessions where token_hash=$1',[digest(req.token)]);res.json(null);});
 const tables=new Set(['familias','pessoas','contas','cartoes','categorias','lancamentos','fin_subcategorias','fin_metas','fin_orcamentos','fin_movimentos','fin_planos']);
 const writes=new Set(['contas','cartoes','categorias','fin_subcategorias','fin_metas','fin_orcamentos','fin_movimentos','fin_planos']);
