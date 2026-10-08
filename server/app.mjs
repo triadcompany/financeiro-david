@@ -1,4 +1,4 @@
-import express from 'express';import helmet from 'helmet';import {rateLimit} from 'express-rate-limit';import {randomBytes,randomUUID,timingSafeEqual} from 'node:crypto';
+import express from 'express';import helmet from 'helmet';import {rateLimit} from 'express-rate-limit';import {randomBytes,randomUUID,randomInt,timingSafeEqual} from 'node:crypto';
 import {sendResetEmail,mailConfigured} from './mail.mjs';
 import {hashPassword,checkPassword,digest} from './password.mjs';
 export function createApp({pool,transaction,sendReset=sendResetEmail,canReset=mailConfigured}){
@@ -90,9 +90,11 @@ app.post('/api/whatsapp/link/request',waLimit,async(req,res)=>{
  if(!phone)return res.status(400).json({message:'Informe o número com DDD e código do Brasil (+55).'});
  const taken=await pool.query('select 1 from public.north_whatsapp_links where phone=$1 and user_id<>$2',[phone,req.user]);
  if(taken.rowCount)return res.status(409).json({message:'Número vinculado a outro usuário.'});
+ const pending=await pool.query('select 1 from public.north_whatsapp_challenges where phone=$1 and user_id<>$2 and expires_at>now()',[phone,req.user]);
+ if(pending.rowCount)return res.status(409).json({message:'Número já possui uma verificação pendente.'});
  const recent=await pool.query("select 1 from public.north_whatsapp_challenges where user_id=$1 and created_at>now()-interval '60 seconds'",[req.user]);
  if(recent.rowCount)return res.status(429).json({message:'Aguarde 60 segundos para solicitar outro código.'});
- const code=String(Math.floor(Math.random()*1000000)).padStart(6,'0');
+ const code=String(randomInt(1000000)).padStart(6,'0');
  await pool.query("insert into public.north_whatsapp_challenges(user_id,phone,code_hash,expires_at) values($1,$2,$3,now()+interval '10 minutes') on conflict(user_id) do update set phone=excluded.phone,code_hash=excluded.code_hash,expires_at=excluded.expires_at,attempts=0,created_at=now()",[req.user,phone,waHash(req.user,code)]);
  res.json({status:'pending',phone,code,expires_in_seconds:600});
 });
