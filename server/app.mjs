@@ -110,6 +110,41 @@ app.post('/api/agent/events/claim',waLimit,async(req,res)=>{
  const result=await pool.query('insert into public.north_agent_events(instance,external_event_id,user_id) values($1,$2,$3) on conflict(instance,external_event_id) do nothing returning id',['financeiro-david',eventId,userId]);
  res.json({status:result.rowCount?'claimed':'duplicate',linked:true,is_new:!!result.rowCount,user_id:userId});
 });
+// n8n integration: proposals and confirmations remain test-only; never write fin_movimentos.
+function agentAuth(req,res){
+ const secret=process.env.NORTH_AGENT_API_KEY||'',key=req.get('x-north-agent-key')||'';
+ if(secret.length<32){res.status(503).json({status:'unavailable'});return false;}
+ if(!key||!timingSafeEqual(Buffer.from(digest(secret)),Buffer.from(digest(key)))){res.status(401).json({status:'unauthorized'});return false;}
+ return true;
+}
+async function agentLinkedUser(req,res){
+ const d=req.body||{},phone=waPhone(d.sender_phone);
+ if(d.accepted!==true||d.provider!=='evolution'||d.instance!=='financeiro-david'||d.channel!=='whatsapp'||!phone||typeof d.external_event_id!=='string'||!d.external_event_id||d.external_event_id.length>200){res.status(400).json({status:'invalid_payload'});return null;}
+ const r=await pool.query('select user_id from public.north_whatsapp_links where phone=$1',[phone]);
+ if(!r.rowCount){res.status(404).json({status:'unlinked'});return null;}
+ return r.rows[0].user_id;
+}
+app.post('/api/agent/whatsapp/drafts',waLimit,async(req,res)=>{
+ if(!agentAuth(req,res))return;
+ const userId=await agentLinkedUser(req,res);if(!userId)return;
+ const payload=cleanDraft(req.body?.payload);
+ const event=req.body.external_event_id;
+ const r=await pool.query("insert into public.north_agent_drafts(user_id,external_event_id,payload) values($1,$2,$3) on conflict(user_id,external_event_id) do update set updated_at=public.north_agent_drafts.updated_at returning id,status,payload",[userId,event,JSON.stringify(payload)]);
+ const item=r.rows[0];
+ res.json({status:item.status,id:item.id,reference:item.id.slice(0,8).toUpperCase(),payload:item.payload,confirmation_required:true,financial_recorded:false});
+});
+app.post('/api/agent/whatsapp/drafts/preview-confirm',waLimit,async(req,res)=>{
+ if(!agentAuth(req,res))return;
+ const userId=await agentLinkedUser(req,res);if(!userId)return;
+ const ref=String(req.body?.reference||'').trim().toLowerCase();
+ if(!/^[0-9a-f]{8}$/.test(ref))return res.status(400).json({status:'reference_required'});
+ // The prefix identifies a single proposal, scoped to the verified phone's user.
+ const rows=await pool.query("select id,status from public.north_agent_drafts where user_id=$1 and left(id::text,8)=$2 order by created_at desc limit 2",[userId,ref]);
+ if(rows.rowCount!==1)return res.status(409).json({status:rows.rowCount?'ambiguous_reference':'draft_not_found'});
+ const r=await pool.query("update public.north_agent_drafts set status='confirmed_preview',updated_at=now() where id=$1 and user_id=$2 and status='pending' returning id,status",[rows.rows[0].id,userId]);
+ if(!r.rowCount)return res.status(409).json({status:'already_handled'});
+ res.json({status:'confirmed_preview',id:r.rows[0].id,financial_recorded:false,message:'Confirmação de teste recebida. Nenhum lançamento foi registrado.'});
+});
 app.use('/api',async(req,res,next)=>{const token=(req.headers.authorization||'').replace(/^Bearer /,'');const r=await pool.query('select user_id from auth.sessions where token_hash=$1 and expires_at>now()',[digest(token)]);if(!r.rowCount)throw fail('Entre novamente.',401);req.user=r.rows[0].user_id;req.token=token;next();});
 // Draft-only financial proposals, scoped to the authenticated NORTH user.
 const cleanDraft=input=>{
