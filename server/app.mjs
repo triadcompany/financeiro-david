@@ -190,6 +190,59 @@ app.post('/api/agent/drafts',async(req,res)=>{
  if(!r.rowCount)return res.status(409).json({status:'duplicate_draft'});
  res.status(201).json({...r.rows[0],financial_recorded:false,confirmation_required:true});
 });
+// Financial posting is permitted only from an authenticated NORTH session.
+// The unauthenticated WhatsApp webhook never calls this route.
+app.post('/api/agent/drafts/:id/post',async(req,res)=>{
+ if(!/^[0-9a-f-]{36}$/i.test(req.params.id))throw fail('Identificador inválido.');
+ const result=await transaction(async c=>{
+  const draft=(await c.query("select * from public.north_agent_drafts where id=$1 and user_id=$2 for update",[req.params.id,req.user])).rows[0];
+  if(!draft)throw fail('Proposta não encontrada.',404);
+  if(draft.status==='posted'){
+   const existing=await c.query("select id from public.fin_planos where id=$1",[draft.id]);
+   if(!existing.rowCount)throw fail('Registro inconsistente; contate o suporte.',409);
+   return {status:'posted',plan_id:draft.id,already_recorded:true,financial_recorded:true};
+  }
+  if(draft.status!=='pending')throw fail('Proposta não está pendente.',409);
+  const d=cleanDraft(draft.payload),tipo=d.tipo==='despesa'?'saida':'entrada';
+  const persons=(await c.query('select familia_id,id from public.pessoas where usuario_id=$1',[req.user])).rows;
+  if(persons.length!==1)throw fail('Identifique a pessoa e família antes de registrar.',409);
+  const familia=persons[0].familia_id;
+  const resolve=async(table,label,filter,required)=>{
+   const rows=(await c.query('select id,nome from public.'+table+' where familia_id=$1 '+filter,[familia])).rows;
+   if(label){
+    const match=rows.filter(x=>x.nome?.trim().toLocaleLowerCase('pt-BR')===label.trim().toLocaleLowerCase('pt-BR'));
+    if(match.length!==1)throw fail('Cadastro ambíguo ou inexistente: '+label,422);
+    return match[0].id;
+   }
+   if(required&&rows.length!==1)throw fail('Informe o cadastro: '+table,422);
+   return rows.length===1?rows[0].id:null;
+  };
+  const categoria=await resolve('categorias',d.categoria,"and tipo='"+tipo+"' and ativa=true",true);
+  const subcat=d.subcategoria?await resolve('fin_subcategorias',d.subcategoria,'and categoria_id=\''+categoria+'\'',true):null;
+  const payment=(d.forma_pagamento||'').trim().toLocaleLowerCase('pt-BR');
+  const forma=payment==='pix'?'pix':payment==='dinheiro'?'dinheiro':payment==='débito'||payment==='debito'?'debito':payment==='crédito'||payment==='credito'?'credito':null;
+  if(!forma)throw fail('Informe a forma de pagamento.',422);
+  let conta=null,cartao=null,fatura=null;
+  if(forma==='credito'){
+   if(tipo!=='saida')throw fail('Pagamento no crédito só é aceito para despesas.',422);
+   cartao=await resolve('cartoes',d.cartao_ou_conta,'and ativo=true',true);
+   const info=(await c.query('select dia_fechamento,dia_vencimento from public.cartoes where id=$1 and familia_id=$2',[cartao,familia])).rows[0];
+   if(!info?.dia_fechamento||!info?.dia_vencimento)throw fail('Configure fechamento e vencimento do cartão.',422);
+   fatura=(await c.query('select public.fin_primeira_fatura($1::date,$2::integer,$3::integer) as mes',[d.data,info.dia_fechamento,info.dia_vencimento])).rows[0].mes;
+  }else conta=await resolve('contas',d.cartao_ou_conta,'and ativa=true',true);
+  if(d.pessoa&&d.pessoa.trim()){
+   const p=(await c.query('select id from public.pessoas where familia_id=$1 and lower(nome)=lower($2)',[familia,d.pessoa.trim()])).rows;
+   if(p.length!==1||p[0].id!==persons[0].id)throw fail('Pessoa não identificada como titular da sessão.',422);
+  }
+  const today=(await c.query('select current_date::text as today')).rows[0].today;
+  const status=forma==='credito'||d.data>today?'pendente':'concluido';
+  const dados={tipo,descricao:d.descricao,valor:d.valor,status,forma,conta_id:conta,cartao_id:cartao,categoria_id:categoria,subcategoria_id:subcat,pessoa_id:persons[0].id,fatura_mes:fatura,data_realizada:status==='concluido'?d.data:null};
+  await c.query('select public.fin_criar($1::uuid,$2::uuid,$3::text,$4::date,$5::date,$6::text,$7::integer,$8::jsonb)',[draft.id,familia,d.parcelas>1?'parcelado':'unico',d.data,null,'mensal',d.parcelas,JSON.stringify(dados)]);
+  await c.query("update public.north_agent_drafts set status='posted',updated_at=now() where id=$1 and user_id=$2",[draft.id,req.user]);
+  return {status:'posted',plan_id:draft.id,already_recorded:false,financial_recorded:true};
+ },req.user);
+ res.json(result);
+});
 app.post('/api/agent/drafts/:id/preview-confirm',async(req,res)=>{
  if(!/^[a-f0-9-]{36}$/i.test(req.params.id))return res.status(400).json({message:'Identificador inválido.'});
  const r=await pool.query("update public.north_agent_drafts set status='confirmed_preview',updated_at=now() where id=$1 and user_id=$2 and status='pending' returning id,status",[req.params.id,req.user]);
