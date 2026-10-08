@@ -194,10 +194,10 @@ app.post('/api/agent/drafts',async(req,res)=>{
 });
 // Financial posting is permitted only from an authenticated NORTH session.
 // The unauthenticated WhatsApp webhook never calls this route.
-app.post('/api/agent/drafts/:id/post',async(req,res)=>{
- if(!/^[0-9a-f-]{36}$/i.test(req.params.id))throw fail('Identificador inválido.');
+async function postFinancialDraft(draftId,userId){
+ if(!/^[0-9a-f-]{36}$/i.test(draftId))throw fail('Identificador inválido.');
  const result=await transaction(async c=>{
-  const draft=(await c.query("select * from public.north_agent_drafts where id=$1 and user_id=$2 for update",[req.params.id,req.user])).rows[0];
+  const draft=(await c.query("select * from public.north_agent_drafts where id=$1 and user_id=$2 for update",[draftId,userId])).rows[0];
   if(!draft)throw fail('Proposta não encontrada.',404);
   if(draft.status==='posted'){
    const existing=await c.query("select id from public.fin_planos where id=$1",[draft.id]);
@@ -206,7 +206,7 @@ app.post('/api/agent/drafts/:id/post',async(req,res)=>{
   }
   if(draft.status!=='pending')throw fail('Proposta não está pendente.',409);
   const d=cleanDraft(draft.payload),tipo=d.tipo==='despesa'?'saida':'entrada';
-  const persons=(await c.query('select familia_id,id from public.pessoas where usuario_id=$1',[req.user])).rows;
+  const persons=(await c.query('select familia_id,id from public.pessoas where usuario_id=$1',[userId])).rows;
   if(persons.length!==1)throw fail('Identifique a pessoa e família antes de registrar.',409);
   const familia=persons[0].familia_id;
   const resolve=async(table,label,filter,required)=>{
@@ -251,10 +251,14 @@ app.post('/api/agent/drafts/:id/post',async(req,res)=>{
   const status=forma==='credito'||d.data>today?'pendente':'concluido';
   const dados={tipo,descricao:d.descricao,valor:d.valor,status,forma,conta_id:conta,cartao_id:cartao,categoria_id:categoria,subcategoria_id:subcat,pessoa_id:persons[0].id,fatura_mes:fatura,data_realizada:status==='concluido'?d.data:null};
   await c.query('select public.fin_criar($1::uuid,$2::uuid,$3::text,$4::date,$5::date,$6::text,$7::integer,$8::jsonb)',[draft.id,familia,d.parcelas>1?'parcelado':'unico',d.data,null,'mensal',d.parcelas,JSON.stringify(dados)]);
-  await c.query("update public.north_agent_drafts set status='posted',updated_at=now() where id=$1 and user_id=$2",[draft.id,req.user]);
+  await c.query("update public.north_agent_drafts set status='posted',updated_at=now() where id=$1 and user_id=$2",[draft.id,userId]);
   return {status:'posted',plan_id:draft.id,already_recorded:false,financial_recorded:true};
- },req.user);
- res.json(result);
+ },userId);
+ return result;
+}
+
+app.post('/api/agent/drafts/:id/post',async(req,res)=>{
+ res.json(await postFinancialDraft(req.params.id,req.user));
 });
 app.post('/api/agent/drafts/:id/preview-confirm',async(req,res)=>{
  if(!/^[a-f0-9-]{36}$/i.test(req.params.id))return res.status(400).json({message:'Identificador inválido.'});
