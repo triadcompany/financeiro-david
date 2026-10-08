@@ -171,12 +171,14 @@ const cleanDraft=input=>{
  if(!['entrada','despesa'].includes(tipo)||typeof descricao!=='string'||!descricao.trim()||descricao.length>250)throw fail('Tipo ou descrição inválidos.');
  const amount=Number(valor);
  if(!Number.isFinite(amount)||amount<=0||amount>999999999)throw fail('Valor inválido.');
- if(typeof data!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(data)||Number.isNaN(Date.parse(data+'T12:00:00Z')))throw fail('Data inválida.');
+ const localNow=new Intl.DateTimeFormat('en-CA',{timeZone:'America/Sao_Paulo',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
+ const effectiveDate=data||localNow;
+ if(typeof effectiveDate!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(effectiveDate)||Number.isNaN(Date.parse(effectiveDate+'T12:00:00Z')))throw fail('Data inválida.');
  const optional=v=>v==null?null:(typeof v==='string'&&v.length<=120?v:null);
  if([forma_pagamento,categoria,subcategoria,cartao_ou_conta,pessoa].some(v=>v!=null&&optional(v)===null))throw fail('Campo inválido.');
  const count=parcelas==null?1:Number(parcelas);
  if(!Number.isInteger(count)||count<1||count>600)throw fail('Parcelas inválidas.');
- return {tipo,descricao:descricao.trim(),valor:Math.round(amount*100)/100,data,forma_pagamento:optional(forma_pagamento),categoria:optional(categoria),subcategoria:optional(subcategoria),cartao_ou_conta:optional(cartao_ou_conta),pessoa:optional(pessoa),parcelas:count};
+ return {tipo,descricao:descricao.trim(),valor:Math.round(amount*100)/100,data:effectiveDate,forma_pagamento:optional(forma_pagamento),categoria:optional(categoria),subcategoria:optional(subcategoria),cartao_ou_conta:optional(cartao_ou_conta),pessoa:optional(pessoa),parcelas:count};
 };
 app.get('/api/agent/drafts',async(req,res)=>{
  const r=await pool.query('select id,external_event_id,payload,status,created_at from public.north_agent_drafts where user_id=$1 order by created_at desc limit 50',[req.user]);
@@ -219,7 +221,7 @@ app.post('/api/agent/drafts/:id/post',async(req,res)=>{
   };
   const categoria=await resolve('categorias',d.categoria,"and tipo='"+tipo+"' and ativa=true",true);
   const subcat=d.subcategoria?await resolve('fin_subcategorias',d.subcategoria,'and categoria_id=\''+categoria+'\'',true):null;
-  const payment=(d.forma_pagamento||'').trim().toLocaleLowerCase('pt-BR');
+  const payment=(d.forma_pagamento||'pix').trim().toLocaleLowerCase('pt-BR');
   const forma=payment==='pix'?'pix':payment==='dinheiro'?'dinheiro':payment==='débito'||payment==='debito'?'debito':payment==='crédito'||payment==='credito'?'credito':null;
   if(!forma)throw fail('Informe a forma de pagamento.',422);
   let conta=null,cartao=null,fatura=null;
@@ -229,7 +231,18 @@ app.post('/api/agent/drafts/:id/post',async(req,res)=>{
    const info=(await c.query('select dia_fechamento,dia_vencimento from public.cartoes where id=$1 and familia_id=$2',[cartao,familia])).rows[0];
    if(!info?.dia_fechamento||!info?.dia_vencimento)throw fail('Configure fechamento e vencimento do cartão.',422);
    fatura=(await c.query('select public.fin_primeira_fatura($1::date,$2::integer,$3::integer) as mes',[d.data,info.dia_fechamento,info.dia_vencimento])).rows[0].mes;
-  }else conta=await resolve('contas',d.cartao_ou_conta,'and ativa=true',true);
+  }else {
+   if(d.cartao_ou_conta)conta=await resolve('contas',d.cartao_ou_conta,'and ativa=true',true);
+   else {
+    const options=(await c.query('select id,padrao from public.contas where familia_id=$1 and ativa=true',[familia])).rows;
+    if(options.length===1)conta=options[0].id;
+    else {
+     const chosen=options.filter(a=>a.padrao);
+     if(chosen.length!==1)throw fail('Defina uma conta padrão nas configurações.',422);
+     conta=chosen[0].id;
+    }
+   }
+  }
   if(d.pessoa&&d.pessoa.trim()){
    const p=(await c.query('select id from public.pessoas where familia_id=$1 and lower(nome)=lower($2)',[familia,d.pessoa.trim()])).rows;
    if(p.length!==1||p[0].id!==persons[0].id)throw fail('Pessoa não identificada como titular da sessão.',422);
@@ -254,6 +267,18 @@ app.post('/api/agent/drafts/:id/discard',async(req,res)=>{
  const r=await pool.query("update public.north_agent_drafts set status='discarded',updated_at=now() where id=$1 and user_id=$2 and status='pending' returning id,status",[req.params.id,req.user]);
  if(!r.rowCount)return res.status(404).json({message:'Proposta não encontrada ou já respondida.'});
  res.json(r.rows[0]);
+});
+app.post('/api/accounts/:id/default',async(req,res)=>{
+ if(!/^[0-9a-f-]{36}$/i.test(req.params.id))throw fail('Conta inválida.');
+ const r=await transaction(async c=>{
+  const found=await c.query('select c.id,c.familia_id from public.contas c join public.pessoas p on p.familia_id=c.familia_id where c.id=$1 and c.ativa=true and p.usuario_id=$2',[req.params.id,req.user]);
+  if(found.rowCount!==1)throw fail('Conta não encontrada ou inativa.',404);
+  const family=found.rows[0].familia_id;
+  await c.query('update public.contas set padrao=false where familia_id=$1 and padrao=true',[family]);
+  await c.query('update public.contas set padrao=true where familia_id=$1 and id=$2',[family,req.params.id]);
+  return {status:'ok',default_account_id:req.params.id};
+ },req.user);
+ res.json(r);
 });
 app.get('/api/whatsapp/link/status',async(req,res)=>{const r=await pool.query('select phone,verified_at from public.north_whatsapp_links where user_id=$1',[req.user]);res.json({connected:!!r.rowCount,phone:r.rows[0]?.phone||null,verified_at:r.rows[0]?.verified_at||null});});
 app.post('/api/whatsapp/link/request',waLimit,async(req,res)=>{
