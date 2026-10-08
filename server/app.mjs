@@ -133,6 +133,17 @@ app.post('/api/agent/whatsapp/drafts',waLimit,async(req,res)=>{
  const item=r.rows[0];
  res.json({status:item.status,id:item.id,reference:item.id.slice(0,8).toUpperCase(),payload:item.payload,confirmation_required:true,financial_recorded:false});
 });
+// Convert a linked WhatsApp message to a financial movement. The agent key is required.
+app.post('/api/agent/whatsapp/post',waLimit,async(req,res)=>{
+ if(!agentAuth(req,res))return;
+ const userId=await agentLinkedUser(req,res);
+ if(!userId)return;
+ const payload=cleanDraft(req.body?.payload);
+ const eventId=req.body.external_event_id;
+ const r=await pool.query("insert into public.north_agent_drafts(user_id,external_event_id,payload) values($1,$2,$3) on conflict(user_id,external_event_id) do update set updated_at=public.north_agent_drafts.updated_at returning id,status",[userId,eventId,JSON.stringify(payload)]);
+ const result=await postFinancialDraft(r.rows[0].id,userId);
+ res.json({...result,payload,confirmation_required:false});
+});
 app.post('/api/agent/whatsapp/drafts/preview-confirm',waLimit,async(req,res)=>{
  if(!agentAuth(req,res))return;
  const userId=await agentLinkedUser(req,res);if(!userId)return;
