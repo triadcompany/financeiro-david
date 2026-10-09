@@ -134,6 +134,88 @@ app.post('/api/agent/whatsapp/catalog',waLimit,async(req,res)=>{
  const categories=await pool.query("select c.id,c.nome,c.tipo,coalesce((select json_agg(s.nome order by s.nome) from public.fin_subcategorias s where s.familia_id=c.familia_id and s.categoria_id=c.id),'[]'::json) as subcategorias from public.categorias c where c.familia_id=$1 and c.ativa=true order by c.tipo,c.nome",[familyId]);
  res.json({status:'ok',categorias:categories.rows});
 });
+// Stateful conversational intake. Incomplete messages never produce financial movements.
+app.post('/api/agent/whatsapp/conversation',waLimit,async(req,res)=>{
+ if(!agentAuth(req,res))return;
+ const userId=await agentLinkedUser(req,res);if(!userId)return;
+ const raw=String(req.body.text||'').trim(),provided=req.body.payload;
+ const rows=await pool.query('select state,missing_field from public.north_agent_conversations where user_id=$1 and expires_at>now()',[userId]);
+ const active=rows.rows[0], state=active?.state||{};
+ const fold=v=>String(v||'').normalize('NFD').replace(/[\\u0300-\\u036f]/g,'').toLowerCase().trim();
+ if(active?.missing_field&&fold(raw)==='cancelar'){
+  await pool.query('delete from public.north_agent_conversations where user_id=$1',[userId]);
+  return res.json({status:'cancelled',financial_recorded:false,message:'Lançamento descartado.'});
+ }
+ let input={};
+ if(active?.missing_field){
+  input={...state};
+  const field=active.missing_field;
+  if(field==='valor'){const v=Number(raw.replace(/[^0-9,.]/g,'').replace(',','.'));if(Number.isFinite(v)&&v>0)input.valor=v;}
+  else if(field==='descricao')input.descricao=raw;
+  else if(field==='categoria')input.categoria=raw;
+  else if(field==='subcategoria')input.subcategoria=raw;
+  else if(field==='forma_pagamento')input.forma_pagamento=raw;
+  else if(field==='cartao_ou_conta')input.cartao_ou_conta=raw;
+  else if(field==='parcelas'){const v=Number(raw.replace(/\\D/g,''));if(Number.isInteger(v)&&v>0)input.parcelas=v;}
+  else if(field==='data')input.data=raw;
+  else if(field==='pessoa')input.pessoa=raw;
+ }else if(provided&&typeof provided==='object'&&!Array.isArray(provided))input={...provided};
+ else return res.status(400).json({status:'invalid_payload'});
+ if(!input.data)input.data=new Intl.DateTimeFormat('en-CA',{timeZone:'America/Sao_Paulo',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
+ if(!input.forma_pagamento)input.forma_pagamento='pix';
+ const people=await pool.query('select familia_id from public.pessoas where usuario_id=$1',[userId]);
+ if(people.rowCount!==1)return res.status(409).json({status:'family_not_resolved'});
+ const family=people.rows[0].familia_id;
+ const categoryRows=(await pool.query('select nome,tipo,id from public.categorias where familia_id=$1 and ativa=true',[family])).rows;
+ const expected=input.tipo==='entrada'?'entrada':'saida',categories=categoryRows.filter(c=>c.tipo===expected);
+ const lookup=(name,list)=>list.filter(c=>fold(c.nome)===fold(name));
+ let missing=null,message='';
+ if(!input.tipo||!['despesa','entrada'].includes(input.tipo)) {missing='tipo';message='Foi uma despesa ou receita?';}
+ else if(!input.descricao||!String(input.descricao).trim()){missing='descricao';message='Qual é a descrição desse lançamento?';}
+ else if(!Number.isFinite(Number(input.valor))||Number(input.valor)<=0){missing='valor';message='Qual foi o valor do lançamento?';}
+ else if(!input.categoria||lookup(input.categoria,categories).length!==1){
+  missing='categoria';
+  const samples=categories.slice(0,4).map(c=>c.nome);
+  message='Em qual categoria devo registrar? '+(samples.length?'Algumas opções: '+samples.join(', ')+'.':'Cadastre uma categoria no NORTH.');
+ }else{
+  input.categoria=lookup(input.categoria,categories)[0].nome;
+  if(input.subcategoria){
+   const subs=(await pool.query('select nome from public.fin_subcategorias where familia_id=$1 and categoria_id=$2',[family,lookup(input.categoria,categories)[0].id])).rows;
+   if(lookup(input.subcategoria,subs).length!==1){missing='subcategoria';message='Não encontrei essa subcategoria. Qual devo utilizar?';}
+  }
+ }
+ if(!missing&&fold(input.forma_pagamento).includes('credito')){
+  const cards=(await pool.query('select nome from public.cartoes where familia_id=$1 and ativo=true',[family])).rows;
+  if(!input.cartao_ou_conta&&cards.length===1)input.cartao_ou_conta=cards[0].nome;
+  if(!input.cartao_ou_conta||lookup(input.cartao_ou_conta,cards).length!==1){missing='cartao_ou_conta';message='Qual cartão de crédito foi utilizado? '+cards.map(c=>c.nome).join(', ');}
+ }
+ if(!missing&&input.parcelas!=null&&(!Number.isInteger(Number(input.parcelas))||Number(input.parcelas)<1)){missing='parcelas';message='Em quantas parcelas foi a compra?';}
+ if(!missing){
+  const accounts=(await pool.query('select nome,padrao from public.contas where familia_id=$1 and ativa=true',[family])).rows;
+  if(!fold(input.forma_pagamento).includes('credito')&&!input.cartao_ou_conta&&accounts.length!==1&&!accounts.some(a=>a.padrao)){missing='cartao_ou_conta';message='Qual conta foi utilizada? '+accounts.map(a=>a.nome).join(', ');}
+ }
+ const store=async(field)=>{
+  const firstEvent=state._event_id||req.body.external_event_id;
+  const next={...input,_event_id:firstEvent};
+  await pool.query("insert into public.north_agent_conversations(user_id,state,missing_field,updated_at,expires_at) values($1,$2,$3,now(),now()+interval '24 hours') on conflict(user_id) do update set state=excluded.state,missing_field=excluded.missing_field,updated_at=now(),expires_at=excluded.expires_at",[userId,JSON.stringify(next),field]);
+ };
+ if(missing){await store(missing);return res.json({status:'needs_info',missing_field:missing,message,financial_recorded:false});}
+ let payload;try{payload=cleanDraft(input);}catch(e){return res.status(422).json({status:'invalid_financial_data',message:e.message,financial_recorded:false});}
+ const eventId=state._event_id||req.body.external_event_id;
+ const draft=await pool.query("insert into public.north_agent_drafts(user_id,external_event_id,payload) values($1,$2,$3) on conflict(user_id,external_event_id) do update set updated_at=public.north_agent_drafts.updated_at returning id",[userId,eventId,JSON.stringify(payload)]);
+ try{
+  const posted=await postFinancialDraft(draft.rows[0].id,userId);
+  await pool.query('delete from public.north_agent_conversations where user_id=$1',[userId]);
+  return res.json({...posted,payload,message:posted.financial_recorded?'Lançamento registrado no NORTH.':'Lançamento não registrado.'});
+ }catch(e){
+  if(e.status===422){
+   const hint=String(e.message||'');
+   let field=hint.includes('categor')?'categoria':hint.includes('conta')?'cartao_ou_conta':hint.includes('cartão')?'cartao_ou_conta':null;
+   if(field){await store(field);return res.json({status:'needs_info',missing_field:field,message:hint,financial_recorded:false});}
+  }
+  throw e;
+ }
+});
 app.post('/api/agent/whatsapp/drafts',waLimit,async(req,res)=>{
  if(!agentAuth(req,res))return;
  const userId=await agentLinkedUser(req,res);if(!userId)return;
