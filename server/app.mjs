@@ -141,6 +141,7 @@ app.post('/api/agent/whatsapp/conversation',waLimit,async(req,res)=>{
  const raw=String(req.body.text||'').trim(),provided=req.body.payload;
  const rows=await pool.query('select state,missing_field from public.north_agent_conversations where user_id=$1 and expires_at>now()',[userId]);
  const active=rows.rows[0], state=active?.state||{};
+ if(active?.missing_field==='subcategoria') { await pool.query('update public.north_agent_conversations set missing_field=null,state=state - \'subcategoria\' where user_id=$1',[userId]); }
  const fold=v=>String(v||'').normalize('NFD').replace(/[\\u0300-\\u036f]/g,'').toLowerCase().trim();
  if(active?.missing_field&&fold(raw)==='cancelar'){
   await pool.query('delete from public.north_agent_conversations where user_id=$1',[userId]);
@@ -182,7 +183,7 @@ app.post('/api/agent/whatsapp/conversation',waLimit,async(req,res)=>{
   input.categoria=lookup(input.categoria,categories)[0].nome;
   if(input.subcategoria){
    const subs=(await pool.query('select nome from public.fin_subcategorias where familia_id=$1 and categoria_id=$2',[family,lookup(input.categoria,categories)[0].id])).rows;
-   if(lookup(input.subcategoria,subs).length!==1){missing='subcategoria';message='Não encontrei essa subcategoria. Qual devo utilizar?';}
+   if(lookup(input.subcategoria,subs).length!==1)input.subcategoria=null;
   }
  }
  if(!missing&&fold(input.forma_pagamento).includes('credito')){
@@ -324,7 +325,9 @@ async function postFinancialDraft(draftId,userId){
    return rows.length===1?rows[0].id:null;
   };
   const categoria=await resolve('categorias',d.categoria,"and tipo='"+tipo+"' and ativa=true",true);
-  const subcat=d.subcategoria?await resolve('fin_subcategorias',d.subcategoria,'and categoria_id=\''+categoria+'\'',true):null;
+  const subcategories=(await c.query('select id,nome from public.fin_subcategorias where familia_id=$1 and categoria_id=$2',[familia,categoria])).rows;
+  const selectedSub=d.subcategoria?subcategories.filter(x=>x.nome?.trim().toLocaleLowerCase('pt-BR')===d.subcategoria.trim().toLocaleLowerCase('pt-BR')):[];
+  const subcat=selectedSub.length===1?selectedSub[0].id:null;
   const payment=(d.forma_pagamento||'pix').trim().toLocaleLowerCase('pt-BR');
   const forma=payment==='pix'?'pix':payment==='dinheiro'?'dinheiro':payment==='débito'||payment==='debito'?'debito':payment==='crédito'||payment==='credito'?'credito':null;
   if(!forma)throw fail('Informe a forma de pagamento.',422);
