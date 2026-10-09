@@ -151,6 +151,7 @@ app.post('/api/agent/whatsapp/conversation',waLimit,async(req,res)=>{
   input={...state};
   const field=active.missing_field;
   if(field==='valor'){const v=Number(raw.replace(/[^0-9,.]/g,'').replace(',','.'));if(Number.isFinite(v)&&v>0)input.valor=v;}
+  else if(field==='tipo')input.tipo=/^(receita|entrada)$/i.test(raw)?'entrada':/^(despesa|saida|saída)$/i.test(raw)?'despesa':input.tipo;
   else if(field==='descricao')input.descricao=raw;
   else if(field==='categoria')input.categoria=raw;
   else if(field==='subcategoria')input.subcategoria=raw;
