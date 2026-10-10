@@ -141,14 +141,23 @@ app.post('/api/agent/whatsapp/conversation',waLimit,async(req,res)=>{
  const raw=String(req.body.text||'').trim(),provided=req.body.payload;
  const rows=await pool.query('select state,missing_field from public.north_agent_conversations where user_id=$1 and expires_at>now()',[userId]);
  const active=rows.rows[0], state=active?.state||{};
- if(active?.missing_field==='subcategoria') { await pool.query('update public.north_agent_conversations set missing_field=null,state=state - \'subcategoria\' where user_id=$1',[userId]); }
+ const normalizedText=raw.normalize('NFD').replace(/[\\u0300-\\u036f]/g,'').toLowerCase().trim();
+ const destructiveCommand=/^(exclu[ai]|apag[ua]|remov[ae]|delet[ae]|corrig[ae]|alter[ae]|edit[ae]|mostr[ae]|consult[ae]|qual|quanto|saldo|extrato|resumo)\\b/.test(normalizedText);
+ if(destructiveCommand)return res.json({status:'unsupported_action',financial_recorded:false,message:'Ainda não consigo executar essa ação com segurança pelo WhatsApp. Nenhum lançamento foi alterado. Use o painel NORTH para consultar, editar ou excluir.'});
+ const structuredNew=provided&&typeof provided==='object'&&!Array.isArray(provided)&&['entrada','despesa'].includes(provided.tipo)&&typeof provided.descricao==='string'&&provided.descricao.trim()&&Number(provided.valor)>0;
+ const explicitNew=/^(gastei|paguei|comprei|recebi|recebimento|ganhei|entrou|deposito|depositei|vendi|fiz uma compra|nova despesa|nova receita|nova entrada|lancar|lan[çc]ar|registre|registrar)\\b/.test(normalizedText);
+ const newInstruction=!!(structuredNew&&(explicitNew||!active));
+ if(active?.missing_field&&structuredNew&&explicitNew){
+  await pool.query('delete from public.north_agent_conversations where user_id=$1',[userId]);
+ }
+ if(active?.missing_field==='subcategoria'&&!newInstruction) { await pool.query('update public.north_agent_conversations set missing_field=null,state=state - \'subcategoria\' where user_id=$1',[userId]); }
  const fold=v=>String(v||'').normalize('NFD').replace(/[\\u0300-\\u036f]/g,'').toLowerCase().trim();
- if(active?.missing_field&&fold(raw)==='cancelar'){
+ if(active?.missing_field&&!newInstruction&&fold(raw)==='cancelar'){
   await pool.query('delete from public.north_agent_conversations where user_id=$1',[userId]);
   return res.json({status:'cancelled',financial_recorded:false,message:'Lançamento descartado.'});
  }
  let input={};
- if(active?.missing_field){
+ if(active?.missing_field&&!newInstruction){
   input={...state};
   const field=active.missing_field;
   if(field==='valor'){const v=Number(raw.replace(/[^0-9,.]/g,'').replace(',','.'));if(Number.isFinite(v)&&v>0)input.valor=v;}
@@ -197,13 +206,13 @@ app.post('/api/agent/whatsapp/conversation',waLimit,async(req,res)=>{
   if(!fold(input.forma_pagamento).includes('credito')&&!input.cartao_ou_conta&&accounts.length!==1&&!accounts.some(a=>a.padrao)){missing='cartao_ou_conta';message='Qual conta foi utilizada? '+accounts.map(a=>a.nome).join(', ');}
  }
  const store=async(field)=>{
-  const firstEvent=state._event_id||req.body.external_event_id;
+  const firstEvent=newInstruction?req.body.external_event_id:(state._event_id||req.body.external_event_id);
   const next={...input,_event_id:firstEvent};
   await pool.query("insert into public.north_agent_conversations(user_id,state,missing_field,updated_at,expires_at) values($1,$2,$3,now(),now()+interval '24 hours') on conflict(user_id) do update set state=excluded.state,missing_field=excluded.missing_field,updated_at=now(),expires_at=excluded.expires_at",[userId,JSON.stringify(next),field]);
  };
  if(missing){await store(missing);return res.json({status:'needs_info',missing_field:missing,message,financial_recorded:false});}
  let payload;try{payload=cleanDraft(input);}catch(e){return res.status(422).json({status:'invalid_financial_data',message:e.message,financial_recorded:false});}
- const eventId=state._event_id||req.body.external_event_id;
+ const eventId=newInstruction?req.body.external_event_id:(state._event_id||req.body.external_event_id);
  const draft=await pool.query("insert into public.north_agent_drafts(user_id,external_event_id,payload) values($1,$2,$3) on conflict(user_id,external_event_id) do update set updated_at=public.north_agent_drafts.updated_at returning id",[userId,eventId,JSON.stringify(payload)]);
  try{
   const posted=await postFinancialDraft(draft.rows[0].id,userId);
